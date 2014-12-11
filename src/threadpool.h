@@ -1,18 +1,18 @@
 /*
  * Copyright (c) 2013, Mathias Brossard <mathias@brossard.org>.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
  * met:
- * 
+ *
  *  1. Redistributions of source code must retain the above copyright
  *     notice, this list of conditions and the following disclaimer.
- * 
+ *
  *  2. Redistributions in binary form must reproduce the above copyright
  *     notice, this list of conditions and the following disclaimer in the
  *     documentation and/or other materials provided with the distribution.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
  * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
  * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -70,6 +70,23 @@ threadpool_t *threadpool_create(int thread_count, int queue_size, int flags);
  */
 int threadpool_add(threadpool_t *pool, void (*routine)(void *),
                    void *arg, int flags);
+
+/**
+ * @function threadpool_wait
+ * @brief wait until the threadpool's queue becomes empty.
+ * @param pool     Thread pool to wait on.
+ * @return 0 if all goes well, negative values in case of error (@see
+ * threadpool_error_t for codes).
+ */
+int threadpool_wait(threadpool_t *pool);
+
+/**
+ * @function threadpool_thread_no
+ * @brief the number of the current thread within the pool.
+ * @param pool     Thread pool where the current task belongs.
+ * @return thread number; -1 if not within the pool.
+ */
+int threadpool_thread_no(threadpool_t *pool);
 
 /**
  * @function threadpool_destroy

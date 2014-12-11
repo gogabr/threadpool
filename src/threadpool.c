@@ -1,18 +1,18 @@
 /*
  * Copyright (c) 2013, Mathias Brossard <mathias@brossard.org>.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
  * met:
- * 
+ *
  *  1. Redistributions of source code must retain the above copyright
  *     notice, this list of conditions and the following disclaimer.
- * 
+ *
  *  2. Redistributions in binary form must reproduce the above copyright
  *     notice, this list of conditions and the following disclaimer in the
  *     documentation and/or other materials provided with the distribution.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
  * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
  * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -60,6 +60,7 @@ typedef struct {
  *  @brief The threadpool struct
  *
  *  @var notify       Condition variable to notify worker threads.
+ *  @var work_done_notify	Condition variable to notify threadpool_wait()
  *  @var threads      Array containing worker threads ID.
  *  @var thread_count Number of threads
  *  @var queue        Array containing the task queue.
@@ -67,12 +68,14 @@ typedef struct {
  *  @var head         Index of the first element.
  *  @var tail         Index of the next element.
  *  @var count        Number of pending tasks
+ *  @var in_work_count 	Number of tasks being processed.
  *  @var shutdown     Flag indicating if the pool is shutting down
  *  @var started      Number of started threads
  */
 struct threadpool_t {
   pthread_mutex_t lock;
   pthread_cond_t notify;
+  pthread_cond_t work_done_notify;
   pthread_t *threads;
   threadpool_task_t *queue;
   int thread_count;
@@ -80,6 +83,7 @@ struct threadpool_t {
   int head;
   int tail;
   int count;
+  int in_work_count;
   int shutdown;
   int started;
 };
@@ -107,7 +111,7 @@ threadpool_t *threadpool_create(int thread_count, int queue_size, int flags)
     /* Initialize */
     pool->thread_count = 0;
     pool->queue_size = queue_size;
-    pool->head = pool->tail = pool->count = 0;
+    pool->head = pool->tail = pool->count = pool->in_work_count = 0;
     pool->shutdown = pool->started = 0;
 
     /* Allocate thread and task queue */
@@ -118,6 +122,7 @@ threadpool_t *threadpool_create(int thread_count, int queue_size, int flags)
     /* Initialize mutex and conditional variable first */
     if((pthread_mutex_init(&(pool->lock), NULL) != 0) ||
        (pthread_cond_init(&(pool->notify), NULL) != 0) ||
+       (pthread_cond_init(&(pool->work_done_notify), NULL) != 0) ||
        (pool->threads == NULL) ||
        (pool->queue == NULL)) {
         goto err;
@@ -193,6 +198,54 @@ int threadpool_add(threadpool_t *pool, void (*function)(void *),
     return err;
 }
 
+/**
+ * @function threadpool_wait
+ * @brief wait until the threadpool's queue becomes empty.
+ * @param pool     Thread pool to wait on.
+ * @return 0 if all goes well, negative values in case of error (@see
+ * threadpool_error_t for codes).
+ */
+int threadpool_wait(threadpool_t *pool)
+{
+  int err = 0;
+
+  if(pthread_mutex_lock(&pool->lock) != 0) {
+    err = threadpool_lock_failure;
+    return err;
+  }
+
+  while(pool->count > 0 || pool->in_work_count > 0) {
+    if(pthread_cond_wait(&(pool->work_done_notify), &(pool->lock)) != 0) {
+      err = threadpool_lock_failure;
+      break;
+    }
+  }
+
+  if(pthread_mutex_unlock(&pool->lock) != 0) {
+    err = threadpool_lock_failure;
+  }
+
+  return err;
+}
+
+
+/**
+ * @function threadpool_thread_no
+ * @brief the number of the current thread within the pool.
+ * @param pool     Thread pool where the current task belongs.
+ * @return thread number; -1 if not within the pool.
+ */
+int threadpool_thread_no(threadpool_t *pool)
+{
+    int i;
+    pthread_t self = pthread_self();
+    for(i = 0; i < pool->thread_count; i++) {
+        if(self == pool->threads[i]) return i;
+    }
+
+    return -1;
+}
+
 int threadpool_destroy(threadpool_t *pool, int flags)
 {
     int i, err = 0;
@@ -247,15 +300,16 @@ int threadpool_free(threadpool_t *pool)
     if(pool->threads) {
         free(pool->threads);
         free(pool->queue);
- 
+
         /* Because we allocate pool->threads after initializing the
            mutex and condition variable, we're sure they're
            initialized. Let's lock the mutex just in case. */
         pthread_mutex_lock(&(pool->lock));
         pthread_mutex_destroy(&(pool->lock));
         pthread_cond_destroy(&(pool->notify));
+        pthread_cond_destroy(&(pool->work_done_notify));
     }
-    free(pool);    
+    free(pool);
     return 0;
 }
 
@@ -287,12 +341,19 @@ static void *threadpool_thread(void *threadpool)
         pool->head += 1;
         pool->head = (pool->head == pool->queue_size) ? 0 : pool->head;
         pool->count -= 1;
+        pool->in_work_count += 1;
 
         /* Unlock */
         pthread_mutex_unlock(&(pool->lock));
 
         /* Get to work */
         (*(task.function))(task.argument);
+
+        /* Notify waiters, if any */
+        pthread_mutex_lock(&(pool->lock));
+        pool->in_work_count -= 1;
+        pthread_cond_broadcast(&(pool->work_done_notify));
+        pthread_mutex_unlock(&(pool->lock));
     }
 
     pool->started--;
